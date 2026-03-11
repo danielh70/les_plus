@@ -26,7 +26,7 @@
 // @description Improvements to Legacy Game
 // @include     https://www.legacy-game.net/*
 // @include     https://dev.legacy-game.net/*
-// @version     0.0.60
+// @version     0.0.61
 // @grant       none
 // @require     https://raw.githubusercontent.com/nnnick/Chart.js/4aa274d5b2c82e28f7a7b2bb78db23b0429255a1/Chart.js
 // @require     https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.js
@@ -499,21 +499,48 @@ registerFunction(
  * - Once the raid is complete (green End Raid button), end the raid immediately
  *   and auto-confirm the popup.
  */
+/**
+ * FEATURE: Raid QoL automation.
+ * - While standing on an enemy, spam attack automatically.
+ * - Uses a faster cadence on King Behemoth.
+ * - Once the raid is complete (green End Raid button), stop all attack logic,
+ *   open the popup once, then confirm once.
+ */
 registerFunction(
   function autoRaidAttackAndExit() {
     var RAID_AUTO_ENABLED = true;
-    var ATTACK_INTERVAL_MS = 25;
-    var END_RAID_INTERVAL_MS = 50;
-    var raidAttackTimer = null;
-    var raidExitTimer = null;
+
+    // Attack timing
+    var NORMAL_ATTACK_MS = 35;
+    var BEHEMOTH_ATTACK_MS = 10;
+
+    // End-raid timing
+    var END_RAID_POPUP_DELAY_MS = 90;
+    var END_RAID_CONFIRM_RETRY_MS = 120;
+    var END_RAID_CONFIRM_MAX_RETRIES = 20;
+
+    var raidLoopTimer = null;
     var raidObserver = null;
+
+    var lastAttackAt = 0;
+    var isEndingRaid = false;
+    var hasConfirmedRaidExit = false;
+    var confirmRetryCount = 0;
 
     if (!RAID_AUTO_ENABLED) {
       return;
     }
 
     function isVisible($el) {
-      return $el && $el.length && $el.is(':visible');
+      return !!($el && $el.length && $el.is(':visible'));
+    }
+
+    function getVisibleAttackCard() {
+      return $('.npc-card:visible')
+        .filter(function () {
+          return $(this).find('.attack-button:visible').length > 0;
+        })
+        .first();
     }
 
     function getVisibleAttackButton() {
@@ -525,6 +552,16 @@ registerFunction(
       var onclick = $btn.attr('onclick') || '';
       var match = onclick.match(/attackNPC\('([^']+)'\)/);
       return match ? match[1] : null;
+    }
+
+    function isBehemothActive() {
+      var $card = getVisibleAttackCard();
+      if (!isVisible($card)) return false;
+
+      var cardId = String($card.attr('id') || '');
+      var nameText = $card.find('.npc-name').first().text() || '';
+
+      return cardId === 'npc-hiveKing' || /King Behemoth/i.test(nameText);
     }
 
     function raidIsComplete() {
@@ -540,8 +577,20 @@ registerFunction(
       return /successfully completed the raid/i.test(statusText);
     }
 
+    function stopRaidAutomation() {
+      if (raidLoopTimer) {
+        clearInterval(raidLoopTimer);
+        raidLoopTimer = null;
+      }
+
+      if (raidObserver) {
+        raidObserver.disconnect();
+        raidObserver = null;
+      }
+    }
+
     function clickAttackFast() {
-      if (raidIsComplete()) {
+      if (isEndingRaid || hasConfirmedRaidExit || raidIsComplete()) {
         return;
       }
 
@@ -550,7 +599,17 @@ registerFunction(
         return;
       }
 
+      var now = Date.now();
+      var attackDelay = isBehemothActive() ? BEHEMOTH_ATTACK_MS : NORMAL_ATTACK_MS;
+
+      if (now - lastAttackAt < attackDelay) {
+        return;
+      }
+
+      lastAttackAt = now;
+
       var targetId = getAttackTargetId($btn);
+
       if (targetId && typeof window.attackNPC === 'function') {
         window.attackNPC(targetId);
         return;
@@ -559,19 +618,52 @@ registerFunction(
       $btn[0].click();
     }
 
-    function endRaidNow() {
+    function confirmEndRaidOnce() {
+      if (hasConfirmedRaidExit) {
+        return;
+      }
+
+      var $confirm = $('#confirm-end-raid:visible');
+
+      if ($confirm.length) {
+        hasConfirmedRaidExit = true;
+
+        try {
+          if (typeof window.confirmEndRaidPopup === 'function') {
+            window.confirmEndRaidPopup();
+          } else {
+            $confirm[0].click();
+          }
+        } catch (e) {
+          console.error('LES raid confirm failed:', e);
+        }
+
+        return;
+      }
+
+      confirmRetryCount += 1;
+
+      if (confirmRetryCount <= END_RAID_CONFIRM_MAX_RETRIES) {
+        setTimeout(confirmEndRaidOnce, END_RAID_CONFIRM_RETRY_MS);
+      } else {
+        // Give up safely instead of looping forever / freezing the tab.
+        console.warn('LES raid confirm popup was not found after retries.');
+      }
+    }
+
+    function startEndRaidSequence() {
+      if (isEndingRaid || hasConfirmedRaidExit) {
+        return;
+      }
+
       if (!raidIsComplete()) {
         return;
       }
 
-      if ($('#confirm-end-raid:visible').length) {
-        if (typeof window.confirmEndRaidPopup === 'function') {
-          window.confirmEndRaidPopup();
-        } else {
-          $('#confirm-end-raid')[0].click();
-        }
-        return;
-      }
+      isEndingRaid = true;
+
+      // Critical: stop all other raid spam before ending the raid.
+      stopRaidAutomation();
 
       var $endRaid = $('#end-raid:visible');
       if (!$endRaid.length) {
@@ -583,36 +675,48 @@ registerFunction(
         return;
       }
 
-      if (typeof window.showEndRaidPopup === 'function') {
-        window.showEndRaidPopup();
-      } else {
-        $endRaid[0].click();
+      try {
+        if (typeof window.showEndRaidPopup === 'function') {
+          window.showEndRaidPopup();
+        } else {
+          $endRaid[0].click();
+        }
+      } catch (e) {
+        console.error('LES show end raid popup failed:', e);
       }
+
+      setTimeout(confirmEndRaidOnce, END_RAID_POPUP_DELAY_MS);
     }
 
     function tickRaidAutomation() {
-      if (raidIsComplete()) {
-        endRaidNow();
-      } else {
-        clickAttackFast();
+      if (hasConfirmedRaidExit) {
+        return;
       }
+
+      if (raidIsComplete()) {
+        startEndRaidSequence();
+        return;
+      }
+
+      clickAttackFast();
     }
 
-    raidAttackTimer = setInterval(tickRaidAutomation, ATTACK_INTERVAL_MS);
-    raidExitTimer = setInterval(endRaidNow, END_RAID_INTERVAL_MS);
+    raidLoopTimer = setInterval(tickRaidAutomation, 10);
 
+    // Keep observer lightweight: just nudge the loop, don't directly spam end/attack functions.
     raidObserver = new MutationObserver(function () {
-      tickRaidAutomation();
+      if (!isEndingRaid && !hasConfirmedRaidExit) {
+        tickRaidAutomation();
+      }
     });
 
     raidObserver.observe(document.body, {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['style', 'class', 'src', 'value'],
+      attributeFilter: ['style', 'class', 'src'],
     });
 
-    // Fire once immediately so it reacts without waiting for the first interval.
     tickRaidAutomation();
   },
   ['raid.php'],
