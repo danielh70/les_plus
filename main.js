@@ -1746,6 +1746,131 @@ registerFunction(
   ['.*'],
 );
 
+/**
+ * FEATURE: Allow held items on the map page to be used with a single click.
+ */
+registerFunction(
+  function enableHeldItemQuickUse() {
+    var $heldItemTable = $('#heldItemTable');
+    var $selectedHeldItemDetails = $('#selectedHeldItemDetails');
+    var observer;
+    var isSelectingItem = false;
+
+    if (!$heldItemTable.length) {
+      return;
+    }
+
+    function triggerNativeClick(element) {
+      if (!element) {
+        return;
+      }
+
+      element.dispatchEvent(
+        new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        }),
+      );
+    }
+
+    function clickUseHeldItem() {
+      var useLink = $('#useheldItemLink')[0];
+      var useButton = $('#useHeldItem')[0];
+
+      triggerNativeClick(useButton);
+      triggerNativeClick(useLink);
+    }
+
+    function waitForSelectionAndUse(previousDetailsHtml, retriesRemaining) {
+      var detailsChanged = !$selectedHeldItemDetails.length
+        ? true
+        : $selectedHeldItemDetails.html() !== previousDetailsHtml;
+
+      if (detailsChanged || retriesRemaining <= 0) {
+        clickUseHeldItem();
+        return;
+      }
+
+      window.setTimeout(function () {
+        waitForSelectionAndUse(previousDetailsHtml, retriesRemaining - 1);
+      }, 50);
+    }
+
+    function decorateHeldItemCells() {
+      $heldItemTable
+        .find('td')
+        .has('.item_slot img.itemicon.valid')
+        .each(function () {
+          $(this)
+            .addClass('les-held-item-button')
+            .attr({
+              role: 'button',
+              tabindex: 0,
+            });
+        });
+    }
+
+    if (!$('#les-held-item-button-style').length) {
+      $('head').append(
+        $(
+          '<style id="les-held-item-button-style">' +
+            '#heldItemTable td.les-held-item-button{cursor:pointer;}' +
+            '#heldItemTable td.les-held-item-button:focus{outline:1px dotted #fff;outline-offset:-2px;}' +
+            '</style>',
+        ),
+      );
+    }
+
+    decorateHeldItemCells();
+
+    $heldItemTable.off('.lesHeldItemQuickUse');
+
+    $heldItemTable.on('click.lesHeldItemQuickUse', 'td.les-held-item-button', function (e) {
+      var $cell = $(this);
+      var $item = $cell.find('.item_slot img.itemicon.valid').first();
+      var previousDetailsHtml = $selectedHeldItemDetails.html();
+
+      if (isSelectingItem) {
+        return;
+      }
+
+      if (!$item.length) {
+        return;
+      }
+
+      if (!$(e.target).closest('img.itemicon').length) {
+        isSelectingItem = true;
+        try {
+          triggerNativeClick($item[0]);
+        } finally {
+          isSelectingItem = false;
+        }
+      }
+
+      waitForSelectionAndUse(previousDetailsHtml, 6);
+    });
+
+    $heldItemTable.on('keydown.lesHeldItemQuickUse', 'td.les-held-item-button', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') {
+        return;
+      }
+
+      e.preventDefault();
+      $(this).trigger('click');
+    });
+
+    observer = new MutationObserver(function () {
+      decorateHeldItemCells();
+    });
+    observer.observe($heldItemTable[0], {
+      childList: true,
+      subtree: true,
+    });
+  },
+  ['map2.php'],
+);
+
 // =============================================================================
 //                                   Jobs
 // =============================================================================
