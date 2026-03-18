@@ -495,37 +495,22 @@ registerFunction(
 
 /**
  * FEATURE: Raid QoL automation.
- * - While standing on an enemy, spam attack as fast as possible.
- * - Once the raid is complete (green End Raid button), end the raid immediately
- *   and auto-confirm the popup.
- */
-/**
- * FEATURE: Raid QoL automation.
  * - While standing on an enemy, spam attack automatically.
  * - Uses a faster cadence on King Behemoth.
- * - Once the raid is complete (green End Raid button), stop all attack logic,
- *   open the popup once, then confirm once.
+ * - Does not interact with the End Raid flow.
  */
 registerFunction(
-  function autoRaidAttackAndExit() {
+  function autoRaidAttack() {
     var RAID_AUTO_ENABLED = true;
 
     // Attack timing
     var NORMAL_ATTACK_MS = 35;
     var BEHEMOTH_ATTACK_MS = 10;
 
-    // End-raid timing
-    var END_RAID_POPUP_DELAY_MS = 90;
-    var END_RAID_CONFIRM_RETRY_MS = 120;
-    var END_RAID_CONFIRM_MAX_RETRIES = 20;
-
     var raidLoopTimer = null;
     var raidObserver = null;
 
     var lastAttackAt = 0;
-    var isEndingRaid = false;
-    var hasConfirmedRaidExit = false;
-    var confirmRetryCount = 0;
 
     if (!RAID_AUTO_ENABLED) {
       return;
@@ -564,36 +549,7 @@ registerFunction(
       return cardId === 'npc-hiveKing' || /King Behemoth/i.test(nameText);
     }
 
-    function raidIsComplete() {
-      var $endRaid = $('#end-raid');
-      if (!isVisible($endRaid)) return false;
-
-      var src = String($endRaid.attr('src') || '');
-      if (src.indexOf('end_raid_success_simple.png') > -1) {
-        return true;
-      }
-
-      var statusText = $('#raid-status-text').text() || '';
-      return /successfully completed the raid/i.test(statusText);
-    }
-
-    function stopRaidAutomation() {
-      if (raidLoopTimer) {
-        clearInterval(raidLoopTimer);
-        raidLoopTimer = null;
-      }
-
-      if (raidObserver) {
-        raidObserver.disconnect();
-        raidObserver = null;
-      }
-    }
-
     function clickAttackFast() {
-      if (isEndingRaid || hasConfirmedRaidExit || raidIsComplete()) {
-        return;
-      }
-
       var $btn = getVisibleAttackButton();
       if (!isVisible($btn)) {
         return;
@@ -618,96 +574,15 @@ registerFunction(
       $btn[0].click();
     }
 
-    function confirmEndRaidOnce() {
-      if (hasConfirmedRaidExit) {
-        return;
-      }
-
-      var $confirm = $('#confirm-end-raid:visible');
-
-      if ($confirm.length) {
-        hasConfirmedRaidExit = true;
-
-        try {
-          if (typeof window.confirmEndRaidPopup === 'function') {
-            window.confirmEndRaidPopup();
-          } else {
-            $confirm[0].click();
-          }
-        } catch (e) {
-          console.error('LES raid confirm failed:', e);
-        }
-
-        return;
-      }
-
-      confirmRetryCount += 1;
-
-      if (confirmRetryCount <= END_RAID_CONFIRM_MAX_RETRIES) {
-        setTimeout(confirmEndRaidOnce, END_RAID_CONFIRM_RETRY_MS);
-      } else {
-        // Give up safely instead of looping forever / freezing the tab.
-        console.warn('LES raid confirm popup was not found after retries.');
-      }
-    }
-
-    function startEndRaidSequence() {
-      if (isEndingRaid || hasConfirmedRaidExit) {
-        return;
-      }
-
-      if (!raidIsComplete()) {
-        return;
-      }
-
-      isEndingRaid = true;
-
-      // Critical: stop all other raid spam before ending the raid.
-      stopRaidAutomation();
-
-      var $endRaid = $('#end-raid:visible');
-      if (!$endRaid.length) {
-        return;
-      }
-
-      var src = String($endRaid.attr('src') || '');
-      if (src.indexOf('end_raid_success_simple.png') === -1) {
-        return;
-      }
-
-      try {
-        if (typeof window.showEndRaidPopup === 'function') {
-          window.showEndRaidPopup();
-        } else {
-          $endRaid[0].click();
-        }
-      } catch (e) {
-        console.error('LES show end raid popup failed:', e);
-      }
-
-      setTimeout(confirmEndRaidOnce, END_RAID_POPUP_DELAY_MS);
-    }
-
     function tickRaidAutomation() {
-      if (hasConfirmedRaidExit) {
-        return;
-      }
-
-      if (raidIsComplete()) {
-        startEndRaidSequence();
-        return;
-      }
-
       clickAttackFast();
     }
 
     raidLoopTimer = setInterval(tickRaidAutomation, 10);
 
-    // Keep observer lightweight: just nudge the loop, don't directly spam end/attack functions.
+    // Keep observer lightweight: just nudge the loop when the raid UI changes.
     raidObserver = new MutationObserver(function () {
-      if (!isEndingRaid && !hasConfirmedRaidExit) {
-        tickRaidAutomation();
-      }
+      tickRaidAutomation();
     });
 
     raidObserver.observe(document.body, {
